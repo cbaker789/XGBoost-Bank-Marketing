@@ -1,0 +1,25 @@
+{
+  "rows": 41188,
+  "columns": 21,
+  "null_cells": 0,
+  "exact_duplicate_rows": 12,
+  "duplicate_feature_rows": 12,
+  "unknown_counts": {
+    "job": 330,
+    "marital": 80,
+    "education": 1731,
+    "default": 8597,
+    "housing": 990,
+    "loan": 990,
+    "contact": 0,
+    "month": 0,
+    "day_of_week": 0,
+    "poutcome": 0,
+    "y": 0
+  },
+  "duplicates_action": "Retained: anonymization and missing identifiers prevent proof of repeated customers.",
+  "target_counts": {
+    "no": 36548,
+    "yes": 4640
+  }
+}

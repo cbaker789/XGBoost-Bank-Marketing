@@ -1,0 +1,58 @@
+{
+  "run_at_utc": "2026-10-23T18:55:28.863515+00:00",
+  "python": "3.13.5",
+  "data_sha256": "74adfc578bf77a7ff4bb1ba4a9f8709d9e3c6907342959c2c8416847e0afb4d8",
+  "source": "https://archive.ics.uci.edu/dataset/222/bank+marketing",
+  "config": {
+    "seed": 42,
+    "development_windows": [
+      [
+        0.45,
+        0.55,
+        0.65
+      ],
+      [
+        0.55,
+        0.65,
+        0.75
+      ],
+      [
+        0.65,
+        0.75,
+        0.85
+      ]
+    ],
+    "final_window": [
+      0.75,
+      0.85,
+      1.0
+    ],
+    "budgets": [
+      0.05,
+      0.1,
+      0.2
+    ],
+    "selection_metric": "mean_average_precision_divided_by_prevalence",
+    "candidate_names": [
+      "prior",
+      "logistic",
+      "random_forest",
+      "xgb_base",
+      "xgb_regularized",
+      "xgb_engineered",
+      "xgb_no_economics",
+      "xgb_recent",
+      "xgb_recent_no_economics"
+    ],
+    "hypothetical_contact_cost": 2.0,
+    "hypothetical_subscription_value": 100.0
+  },
+  "limitations": "Exploratory: the source dataset and original test outcomes have already been inspected.",
+  "code_and_dependency_sha256": {
+    "research.py": "bdb98bad79634ee750ff291a347b2c8d37ab4ca280491eda3be73ff3d0afc37f",
+    "run_experiments.py": "dce5c2b3298d7aeb7509470972091a2c900ed906ec5aab930ae4f56d8dde80b2",
+    "project_figures.py": "ec6703571c6f0257d519b8a0604d244c187e6434c33c11e1c69d32404a2118b4",
+    "config.json": "6705b1219b2de5d43eb3d60702d1adc9b4b447bc89982465c60f2e4cc06f20b3",
+    "requirements-lock.txt": "39a9301dfa18171d1bc30d41a031aba0e91a4e881e6a9a9aa663c5aa83fd313e"
+  }
+}

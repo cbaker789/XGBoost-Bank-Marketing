@@ -1,0 +1,71 @@
+{
+  "selected_model": {
+    "n": 6179,
+    "prevalence": 0.38452824081566594,
+    "roc_auc": 0.6430312968407894,
+    "average_precision": 0.5096923292101941,
+    "ap_over_prevalence": 1.3255003797095075,
+    "log_loss": 0.7896322494472144,
+    "brier": 0.261288916250925,
+    "threshold": 0.0929806238894804,
+    "precision": 0.46195793300441446,
+    "recall": 0.7487373737373737,
+    "f1": 0.5713826882929179,
+    "lift_at_10pct": 1.3718318568642194,
+    "name": "logistic",
+    "calibration": "sigmoid",
+    "raw_log_loss": 0.6851421786406418,
+    "raw_brier": 0.2377887725778977,
+    "policy_raw_log_loss": 0.31517429857360485,
+    "policy_selected_log_loss": 0.2883868710895714,
+    "policy_n": 1374,
+    "train_n": 30891,
+    "trees": null
+  },
+  "training_prevalence_baseline": {
+    "n": 6179,
+    "prevalence": 0.38452824081566594,
+    "roc_auc": 0.5,
+    "average_precision": 0.38452824081566594,
+    "ap_over_prevalence": 1.0,
+    "log_loss": 1.096865491280022,
+    "brier": 0.3393013889479149,
+    "threshold": 0.0,
+    "precision": 0.38452824081566594,
+    "recall": 1.0,
+    "f1": 0.5554646405610754,
+    "lift_at_10pct": 1.0,
+    "name": "prior",
+    "calibration": "raw",
+    "raw_log_loss": 1.096865491280022,
+    "raw_brier": 0.3393013889479149,
+    "policy_raw_log_loss": 0.29647602644423443,
+    "policy_selected_log_loss": 0.29647602644423443,
+    "policy_n": 1374,
+    "train_n": 30891,
+    "trees": null
+  },
+  "warning": "Exploratory: the source dataset and original test outcomes have already been inspected.",
+  "partitions": {
+    "train": [
+      0,
+      30891
+    ],
+    "stopping": [
+      30891,
+      32263
+    ],
+    "calibration": [
+      32263,
+      33635
+    ],
+    "policy": [
+      33635,
+      35009
+    ],
+    "evaluation": [
+      35009,
+      41188
+    ]
+  }
+}
