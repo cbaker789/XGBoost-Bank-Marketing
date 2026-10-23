@@ -1,0 +1,223 @@
+/**
+ * Copyright 2014-2026, XGBoost Contributors
+ * \file gbm.h
+ * \brief Interface of gradient booster,
+ *  that learns through gradient statistics.
+ * \author Tianqi Chen
+ */
+#ifndef XGBOOST_GBM_H_
+#define XGBOOST_GBM_H_
+
+#include <dmlc/registry.h>
+#include <xgboost/base.h>
+#include <xgboost/data.h>
+#include <xgboost/gradient.h>  // for GradientContainer
+#include <xgboost/host_device_vector.h>
+#include <xgboost/model.h>
+
+#include <functional>
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace xgboost {
+
+class Json;
+class FeatureMap;
+class ObjFunction;
+class CatContainer;
+
+struct Context;
+struct LearnerModelState;
+
+/*!
+ * \brief interface of gradient boosting model.
+ *
+ * Prediction methods return the shape of the flat output buffer.
+ * Raw predictions retain their output-group axis; objective transforms may change it.
+ */
+class GradientBooster : public Model, public Configurable {
+ protected:
+  Context const* ctx_;
+  explicit GradientBooster(Context const* ctx) : ctx_{ctx} {}
+
+ public:
+  /*! \brief virtual destructor */
+  ~GradientBooster() override = default;
+  /**
+   * @brief Set the configuration of gradient boosting.
+   *  User must call configure once before InitModel and Training.
+   *
+   * @param cfg configurations on both training and model parameters.
+   * @return Names of parameters consumed by the booster and its components.
+   */
+  virtual std::set<std::string> Configure(Args const& cfg) = 0;
+
+  /**
+   * \brief Slice a model using boosting index. The slice m:n indicates taking all trees
+   *        that were fit during the boosting rounds m, (m+1), (m+2), ..., (n-1).
+   * \param begin Beginning of boosted tree layer used for prediction.
+   * \param end   End of booster layer. 0 means do not limit trees.
+   * \param out   Output gradient booster
+   */
+  virtual void Slice(bst_layer_t /*begin*/, bst_layer_t /*end*/, bst_layer_t /*step*/,
+                     GradientBooster* /*out*/, bool* /*out_of_bound*/) const {
+    LOG(FATAL) << "Slice is not supported by the current booster.";
+  }
+  /**
+   * @brief Return number of boosted rounds.
+   */
+  [[nodiscard]] virtual std::int32_t BoostedRounds() const = 0;
+  /**
+   * @brief perform update to the model(boosting)
+   *
+   * @param p_fmat feature matrix that provide access to features
+   * @param in_gpair address of the gradient pair statistics of the data
+   * @param prediction The output prediction cache entry that needs to be updated.
+   *                   the booster may change content of gpair
+   * @param obj The objective function used for boosting.
+   */
+  virtual void DoBoost(std::shared_ptr<DMatrix> p_fmat, GradientContainer* in_gpair,
+                       ObjFunction const* obj) = 0;
+
+  /**
+   * \brief Generate predictions for given feature matrix
+   *
+   * \param dmat     The feature matrix.
+   * \param out_preds output vector to hold the predictions
+   * \param training Whether the prediction value is used for training.  For dart booster
+   *                 drop out is performed during training.
+   * \param begin    Beginning of boosted tree layer used for prediction.
+   * \param end      End of booster layer. 0 means do not limit trees.
+   * @return Shape `(rows, output_groups)` of the row-major raw predictions in out_preds,
+   *         before objective transformation. The output-group axis is retained for zero rows.
+   */
+  virtual std::vector<bst_ulong> PredictBatch(std::shared_ptr<DMatrix> dmat,
+                                              HostDeviceVector<float>* out_preds, bool training,
+                                              bst_layer_t begin, bst_layer_t end) = 0;
+
+  /**
+   * \brief Inplace prediction.
+   *
+   * \param           p_fmat    A proxy DMatrix that contains the data and related.
+   * \param           missing   Missing value in the data.
+   * \param [in,out]  out_preds The output preds.
+   * \param           begin     (Optional) Beginning of boosted tree layer used for prediction.
+   * \param           end       (Optional) End of booster layer. 0 means do not limit trees.
+   * @return Shape `(rows, output_groups)` of the row-major raw predictions in out_preds,
+   *         before objective transformation, including for empty input.
+   */
+  virtual std::vector<bst_ulong> InplacePredict(std::shared_ptr<DMatrix>, float,
+                                                HostDeviceVector<float>*, bst_layer_t,
+                                                bst_layer_t) const {
+    LOG(FATAL) << "Inplace predict is not supported by the current booster.";
+    return {};
+  }
+  /*!
+   * \brief predict the leaf index of each tree, the output will be nsample * ntree vector
+   *        this is only valid in gbtree predictor
+   * \param dmat feature matrix
+   * \param out_preds output vector to hold the predictions
+   * \param layer_begin Beginning of boosted tree layer used for prediction.
+   * \param layer_end   End of booster layer. 0 means do not limit trees.
+   * @param strict_shape Validate whether it's actually possible to have uniform shape.
+   * @return Shape of the row-major leaf indices in out_preds. With strict_shape,
+   *         `(rows, selected_rounds, output_groups, trees_per_forest)`; otherwise
+   *         `(rows, selected_trees)`, or `(rows,)` for a single selected tree.
+   *         Trailing dimensions are preserved for zero rows.
+   */
+  virtual std::vector<bst_ulong> PredictLeaf(DMatrix* dmat, HostDeviceVector<bst_float>* out_preds,
+                                             bst_layer_t layer_begin, bst_layer_t layer_end,
+                                             bool strict_shape) = 0;
+
+  /*!
+   * \brief feature contributions to individual predictions; the output will be a vector
+   *         of length (nfeats + 1) * num_output_group * nsample, arranged in that order
+   * \param dmat feature matrix
+   * \param out_contribs output vector to hold the contributions
+   * \param layer_begin Beginning of boosted tree layer used for prediction.
+   * \param layer_end   End of booster layer. 0 means do not limit trees.
+   * \param approximate use a faster (inconsistent) approximation of SHAP values
+   * @return Shape `(rows, output_groups, features + 1)` of the row-major contributions
+   *         in out_contribs, including for empty input. The last feature is the bias term;
+   *         features is the model feature count.
+   */
+  virtual std::vector<bst_ulong> PredictContribution(DMatrix* dmat,
+                                                     HostDeviceVector<float>* out_contribs,
+                                                     bst_layer_t layer_begin, bst_layer_t layer_end,
+                                                     bool approximate = false) = 0;
+
+  /**
+   * @brief Predict SHAP interaction contributions, including the bias row and column.
+   * @param dmat Input data.
+   * @param out_contribs Flat row-major buffer receiving the interaction contributions.
+   * @param layer_begin Beginning of boosted tree layer used for prediction.
+   * @param layer_end End of boosted tree layer. Zero selects all remaining layers.
+   * @param approximate Whether to approximate interaction contributions.
+   * @return Shape `(rows, output_groups, features + 1, features + 1)` of out_contribs,
+   *         including for empty input. Features is the model feature count.
+   */
+  virtual std::vector<bst_ulong> PredictInteractionContributions(
+      DMatrix* dmat, HostDeviceVector<float>* out_contribs, bst_layer_t layer_begin,
+      bst_layer_t layer_end, bool approximate) = 0;
+
+  /**
+   * @brief dump the model in the requested format
+   * @param fmap feature map that may help give interpretations of feature
+   * @param with_stats extra statistics while dumping model
+   * @param format the format to dump the model in
+   * @return a vector of dump for boosters.
+   */
+  [[nodiscard]] virtual std::vector<std::string> DumpModel(const FeatureMap& fmap, bool with_stats,
+                                                           std::string format) const = 0;
+
+  virtual void FeatureScore(std::string const& importance_type, common::Span<int32_t const> trees,
+                            std::vector<bst_feature_t>* features,
+                            std::vector<float>* scores) const = 0;
+  /**
+   * @brief Getter for categories.
+   */
+  [[nodiscard]] virtual CatContainer const* Cats() const {
+    LOG(FATAL) << "Retrieving categories is not supported by the current booster.";
+    return nullptr;
+  }
+  /**
+   * @brief create a gradient booster from given name
+   * @param name name of gradient booster
+   * @param generic_param Pointer to runtime parameters
+   * @param learner_model_state pointer to global model parameters
+   * @return The created booster.
+   */
+  static GradientBooster* Create(const std::string& name, Context const* ctx,
+                                 LearnerModelState const* learner_model_state);
+};
+
+/*!
+ * \brief Registry entry for tree updater.
+ */
+struct GradientBoosterReg
+    : public dmlc::FunctionRegEntryBase<
+          GradientBoosterReg,
+          std::function<GradientBooster*(LearnerModelState const* learner_model_state,
+                                         Context const* ctx)> > {};
+
+/*!
+ * \brief Macro to register gradient booster.
+ *
+ * \code
+ * // example of registering a objective ndcg@k
+ * XGBOOST_REGISTER_GBM(GBTree, "gbtree")
+ * .describe("Boosting tree ensembles.")
+ * .set_body([]() {
+ *     return new GradientBooster<TStats>();
+ *   });
+ * \endcode
+ */
+#define XGBOOST_REGISTER_GBM(UniqueId, Name)                  \
+  static DMLC_ATTRIBUTE_UNUSED ::xgboost::GradientBoosterReg& \
+      __make_##GradientBoosterReg##_##UniqueId##__ =          \
+          ::dmlc::Registry< ::xgboost::GradientBoosterReg>::Get()->__REGISTER__(Name)
+
+}  // namespace xgboost
+#endif  // XGBOOST_GBM_H_

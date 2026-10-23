@@ -1,0 +1,11 @@
+# conda environment for CPP test on Linux distributions
+name: cpp_test
+channels:
+- conda-forge
+dependencies:
+- cmake
+- ninja
+- c-compiler
+- cxx-compiler
+- gcc_linux-64=14.*
+- gtest

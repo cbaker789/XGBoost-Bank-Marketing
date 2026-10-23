@@ -1,0 +1,41 @@
+#!/bin/sh
+
+set -eu
+
+if test -n "${CMAKE:-}"; then
+  cmake_bin=${CMAKE}
+elif cmake_bin=$(command -v cmake 2>/dev/null); then
+  :
+elif test -x /Applications/CMake.app/Contents/bin/cmake; then
+  cmake_bin=/Applications/CMake.app/Contents/bin/cmake
+else
+  echo "configure: error: no 'cmake' command found; set CMAKE to its executable path" >&2
+  exit 1
+fi
+if ! "${cmake_bin}" --version >/dev/null 2>&1; then
+  echo "configure: error: cannot run CMAKE='${cmake_bin}'" >&2
+  exit 1
+fi
+
+# The assembled source package takes precedence when it is located inside a repository checkout.
+if test -f src/CMakeLists.txt; then
+  cmake_source=.
+else
+  cmake_source=../..
+fi
+
+escape_sed_replacement() {
+  printf '%s' "$1" | sed 's/[\\&|]/\\&/g'
+}
+
+cmake_escaped=$(escape_sed_replacement "${cmake_bin}")
+source_escaped=$(escape_sed_replacement "${cmake_source}")
+makevars=${XGBOOST_MAKEVARS:-src/Makevars}
+
+sed \
+  -e "s|@CMAKE@|${cmake_escaped}|g" \
+  -e "s|@XGBOOST_CMAKE_SOURCE@|${source_escaped}|g" \
+  src/Makevars.in > "${makevars}"
+
+echo "Using CMake: ${cmake_bin}"
+echo "Using XGBoost source: ${cmake_source}"

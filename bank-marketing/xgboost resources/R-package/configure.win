@@ -1,0 +1,5 @@
+#!/bin/sh
+
+XGBOOST_MAKEVARS=src/Makevars.win
+export XGBOOST_MAKEVARS
+exec sh ./configure "$@"

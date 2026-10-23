@@ -1,0 +1,461 @@
+/**
+ * Copyright 2018-2026, XGBoost contributors
+ */
+#pragma once
+#include <xgboost/json.h>
+#include <xgboost/metric.h>
+
+#include <algorithm>   // for transform
+#include <cmath>       // for acos, log
+#include <functional>  // for plus
+#include <memory>
+#include <numeric>  // for iota
+#include <vector>   // for vector
+
+#include "../helpers.h"
+
+namespace xgboost::metric {
+inline void CheckDeterministicMetricElementWise(StringView name, int32_t device) {
+  auto ctx = MakeCUDACtx(device);
+  std::unique_ptr<Metric> metric{Metric::Create(name.c_str(), &ctx)};
+
+  HostDeviceVector<float> predts;
+  size_t n_samples = 2048;
+
+  auto p_fmat = EmptyDMatrix();
+  MetaInfo &info = p_fmat->Info();
+  info.labels.Reshape(n_samples, 1);
+  info.num_row_ = n_samples;
+  auto &h_labels = info.labels.Data()->HostVector();
+  auto &h_predts = predts.HostVector();
+
+  SimpleLCG lcg;
+  SimpleRealUniformDistribution<float> dist{0.0f, 1.0f};
+
+  h_labels.resize(n_samples);
+  h_predts.resize(n_samples);
+
+  for (size_t i = 0; i < n_samples; ++i) {
+    h_predts[i] = dist(&lcg);
+    h_labels[i] = dist(&lcg);
+  }
+
+  auto result = metric->Evaluate(predts, p_fmat);
+  for (size_t i = 0; i < 8; ++i) {
+    ASSERT_EQ(metric->Evaluate(predts, p_fmat), result);
+  }
+}
+
+inline void VerifyRMSE(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  xgboost::Metric *metric = xgboost::Metric::Create("rmse", &ctx);
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "rmse");
+  EXPECT_NEAR(GetMetricEval(metric, {0, 1}, {0, 1}, {}, {}), 0, 1e-10);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {}, {}), 0.6403f,
+              0.001f);
+  auto expected = 2.8284f;
+  if (collective::IsDistributed()) {
+    expected = sqrt(8.0f * collective::GetWorldSize());
+  }
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {-1, 1, 9, -9}, {}),
+              expected, 0.001f);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {1, 2, 9, 8}, {}),
+              0.6708f, 0.001f);
+  delete metric;
+
+  CheckDeterministicMetricElementWise(StringView{"rmse"}, device.ordinal);
+}
+
+inline void VerifyRMSLE(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  xgboost::Metric *metric = xgboost::Metric::Create("rmsle", &ctx);
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "rmsle");
+  EXPECT_NEAR(GetMetricEval(metric, {0, 1}, {0, 1}, {}, {}), 0, 1e-10);
+  EXPECT_NEAR(
+      GetMetricEval(metric, {0.1f, 0.2f, 0.4f, 0.8f, 1.6f}, {1.0f, 1.0f, 1.0f, 1.0f, 1.0f}, {}, {}),
+      0.4063f, 1e-4);
+  auto expected = 0.6212f;
+  if (collective::IsDistributed()) {
+    expected = sqrt(0.3859f * collective::GetWorldSize());
+  }
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.2f, 0.4f, 0.8f, 1.6f}, {1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+                            {0, -1, 1, -9, 9}, {}),
+              expected, 1e-4);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.2f, 0.4f, 0.8f, 1.6f}, {1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+                            {0, 1, 2, 9, 8}, {}),
+              0.2415f, 1e-4);
+  delete metric;
+
+  CheckDeterministicMetricElementWise(StringView{"rmsle"}, device.ordinal);
+}
+
+inline void VerifyMAE(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  xgboost::Metric *metric = xgboost::Metric::Create("mae", &ctx);
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "mae");
+  EXPECT_NEAR(GetMetricEval(metric, {0, 1}, {0, 1}, {}, {}), 0, 1e-10);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {}, {}), 0.5f, 0.001f);
+  auto expected = 8.0f;
+  if (collective::IsDistributed()) {
+    expected *= collective::GetWorldSize();
+  }
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {-1, 1, 9, -9}, {}),
+              expected, 0.001f);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {1, 2, 9, 8}, {}),
+              0.54f, 0.001f);
+  delete metric;
+
+  CheckDeterministicMetricElementWise(StringView{"mae"}, device.ordinal);
+}
+
+inline void VerifyMAPE(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  xgboost::Metric *metric = xgboost::Metric::Create("mape", &ctx);
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "mape");
+  EXPECT_NEAR(GetMetricEval(metric, {150, 300}, {100, 200}, {}, {}), 0.5f, 1e-10);
+  EXPECT_NEAR(GetMetricEval(metric, {50, 400, 500, 4000}, {100, 200, 500, 1000}, {}, {}), 1.125f,
+              0.001f);
+  auto expected = -26.5f;
+  if (collective::IsDistributed()) {
+    expected *= collective::GetWorldSize();
+  }
+  EXPECT_NEAR(
+      GetMetricEval(metric, {50, 400, 500, 4000}, {100, 200, 500, 1000}, {-1, 1, 9, -9}, {}),
+      expected, 0.001f);
+  EXPECT_NEAR(GetMetricEval(metric, {50, 400, 500, 4000}, {100, 200, 500, 1000}, {1, 2, 9, 8}, {}),
+              1.3250f, 0.001f);
+  delete metric;
+
+  CheckDeterministicMetricElementWise(StringView{"mape"}, device.ordinal);
+}
+
+inline void VerifyMPHE(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  std::unique_ptr<xgboost::Metric> metric{xgboost::Metric::Create("mphe", &ctx)};
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "mphe");
+  EXPECT_NEAR(GetMetricEval(metric.get(), {0, 1}, {0, 1}, {}, {}), 0, 1e-10);
+  EXPECT_NEAR(GetMetricEval(metric.get(), {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {}, {}), 0.1751f,
+              1e-4);
+  auto expected = 3.40375f;
+  if (collective::IsDistributed()) {
+    expected *= collective::GetWorldSize();
+  }
+  EXPECT_NEAR(
+      GetMetricEval(metric.get(), {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {-1, 1, 9, -9}, {}),
+      expected, 1e-4);
+  EXPECT_NEAR(GetMetricEval(metric.get(), {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {1, 2, 9, 8}, {}),
+              0.1922f, 1e-4);
+
+  CheckDeterministicMetricElementWise(StringView{"mphe"}, device.ordinal);
+
+  metric->Configure({{"huber_slope", "0.1"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {1, 2, 9, 8}, {}),
+              0.0461686f, 1e-4);
+  Json config{Object{}};
+  metric->SaveConfig(&config);
+  std::unique_ptr<Metric> loaded{Metric::Create("mphe", &ctx)};
+  loaded->LoadConfig(config);
+  EXPECT_NEAR(GetMetricEval(loaded.get(), {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {1, 2, 9, 8}, {}),
+              0.0461686f, 1e-4);
+
+  loaded->Configure({{"huber_slope", "2.0"}});
+  EXPECT_NEAR(GetMetricEval(loaded.get(), {0}, {1}, {}, {}), 0.472136f, 1e-6);
+
+  loaded->Configure({{"huber_slope", "0"}});
+  EXPECT_THROW(GetMetricEval(loaded.get(), {0}, {1}, {}, {}), dmlc::Error);
+}
+
+inline void VerifyLogLoss(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  xgboost::Metric *metric = xgboost::Metric::Create("logloss", &ctx);
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "logloss");
+  EXPECT_NEAR(GetMetricEval(metric, {0, 1}, {0, 1}, {}, {}), 0, 1e-10);
+  EXPECT_NEAR(GetMetricEval(metric, {0.5f, 1e-17f, 1.0f + 1e-17f, 0.9f}, {0, 0, 1, 1}, {}, {}),
+              0.1996f, 0.001f);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {}, {}), 1.2039f,
+              0.001f);
+  auto expected = 21.9722f;
+  if (collective::IsDistributed()) {
+    expected *= collective::GetWorldSize();
+  }
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {-1, 1, 9, -9}, {}),
+              expected, 0.001f);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {1, 2, 9, 8}, {}),
+              1.3138f, 0.001f);
+  delete metric;
+
+  CheckDeterministicMetricElementWise(StringView{"logloss"}, device.ordinal);
+}
+
+inline void VerifyError(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  xgboost::Metric *metric = xgboost::Metric::Create("error", &ctx);
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "error");
+  EXPECT_NEAR(GetMetricEval(metric, {0, 1}, {0, 1}, {}, {}), 0, 1e-10);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {}, {}), 0.5f, 0.001f);
+  auto expected = 10.0f;
+  if (collective::IsDistributed()) {
+    expected *= collective::GetWorldSize();
+  }
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {-1, 1, 9, -9}, {}),
+              expected, 0.001f);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {1, 2, 9, 8}, {}),
+              0.55f, 0.001f);
+
+  EXPECT_ANY_THROW(xgboost::Metric::Create("error@abc", &ctx));
+  delete metric;
+
+  metric = xgboost::Metric::Create("error@0.5f", &ctx);
+  metric->Configure({});
+  EXPECT_STREQ(metric->Name(), "error");
+
+  delete metric;
+
+  metric = xgboost::Metric::Create("error@0.1", &ctx);
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "error@0.1");
+  EXPECT_STREQ(metric->Name(), "error@0.1");
+  EXPECT_NEAR(GetMetricEval(metric, {0, 1}, {0, 1}, {}, {}), 0, 1e-10);
+  EXPECT_NEAR(GetMetricEval(metric, {-0.1f, -0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {}, {}), 0.25f,
+              0.001f);
+  expected = 9.0f;
+  if (collective::IsDistributed()) {
+    expected *= collective::GetWorldSize();
+  }
+  EXPECT_NEAR(GetMetricEval(metric, {-0.1f, -0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {-1, 1, 9, -9}, {}),
+              expected, 0.001f);
+  EXPECT_NEAR(GetMetricEval(metric, {-0.1f, -0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {1, 2, 9, 8}, {}),
+              0.45f, 0.001f);
+  delete metric;
+
+  CheckDeterministicMetricElementWise(StringView{"error@0.5"}, device.ordinal);
+}
+
+inline void VerifyPoissonNegLogLik(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  xgboost::Metric *metric = xgboost::Metric::Create("poisson-nloglik", &ctx);
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "poisson-nloglik");
+  EXPECT_NEAR(GetMetricEval(metric, {0, 1}, {0, 1}, {}, {}), 0.5f, 1e-10);
+  EXPECT_NEAR(GetMetricEval(metric, {0.5f, 1e-17f, 1.0f + 1e-17f, 0.9f}, {0, 0, 1, 1}, {}, {}),
+              0.6263f, 0.001f);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {}, {}), 1.1019f,
+              0.001f);
+  auto expected = 13.3750f;
+  if (collective::IsDistributed()) {
+    expected *= collective::GetWorldSize();
+  }
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {-1, 1, 9, -9}, {}),
+              expected, 0.001f);
+  EXPECT_NEAR(GetMetricEval(metric, {0.1f, 0.9f, 0.1f, 0.9f}, {0, 0, 1, 1}, {1, 2, 9, 8}, {}),
+              1.5783f, 0.001f);
+  delete metric;
+
+  CheckDeterministicMetricElementWise(StringView{"poisson-nloglik"}, device.ordinal);
+}
+
+inline void VerifyGammaDeviance(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  std::unique_ptr<Metric> metric{Metric::Create("gamma-deviance", &ctx)};
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "gamma-deviance");
+  EXPECT_NEAR(GetMetricEval(metric.get(), {2, 1}, {1, 2}, {1, 3}, {}),
+              (2.5 - 2.0 * std::log(2.0)) / 2.0, 1e-5);
+  EXPECT_EQ(GetMetricEval(metric.get(), {0, 1}, {0, 1}, {}, {}), 0);
+  EXPECT_EQ(GetMetricEval(metric.get(), {2, 1}, {1, 2}, {0, 0}, {}), 0);
+  EXPECT_EQ(GetMetricEval(metric.get(), HostDeviceVector<float>{}, {}, {}, {}), 0);
+  CheckDeterministicMetricElementWise(StringView{"gamma-deviance"}, device.ordinal);
+}
+
+inline void VerifyGammaNLogLik(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  std::unique_ptr<Metric> metric{Metric::Create("gamma-nloglik", &ctx)};
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "gamma-nloglik");
+  EXPECT_NEAR(GetMetricEval(metric.get(), {2, 1}, {1, 2}, {1, 3}, {}), (std::log(2.0) + 6.5) / 4.0,
+              1e-6);
+  EXPECT_NEAR(GetMetricEval(metric.get(), {0}, {0}, {}, {}), std::log(1e-6), 1e-5);
+  EXPECT_EQ(GetMetricEval(metric.get(), {2, 1}, {1, 2}, {0, 0}, {}), 0);
+  EXPECT_EQ(GetMetricEval(metric.get(), HostDeviceVector<float>{}, {}, {}, {}), 0);
+  CheckDeterministicMetricElementWise(StringView{"gamma-nloglik"}, device.ordinal);
+}
+
+inline void VerifyTweedieNLogLik(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  EXPECT_THROW(Metric::Create("tweedie-nloglik", &ctx), dmlc::Error);
+  EXPECT_THROW(Metric::Create("tweedie-nloglik@0.5", &ctx), dmlc::Error);
+  EXPECT_THROW(Metric::Create("tweedie-nloglik@2", &ctx), dmlc::Error);
+  std::unique_ptr<Metric> metric{Metric::Create("tweedie-nloglik@1.5", &ctx)};
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "tweedie-nloglik@1.5");
+  EXPECT_NEAR(GetMetricEval(metric.get(), {1, 4}, {1, 2}, {1, 3}, {}), 5.5, 1e-6);
+  EXPECT_EQ(GetMetricEval(metric.get(), {1, 4}, {1, 2}, {0, 0}, {}), 0);
+  EXPECT_EQ(GetMetricEval(metric.get(), HostDeviceVector<float>{}, {}, {}, {}), 0);
+  metric.reset(Metric::Create("tweedie-nloglik@1.2", &ctx));
+  metric->Configure({});
+  EXPECT_NEAR(GetMetricEval(metric.get(), {1}, {1}, {}, {}), 6.25, 1e-5);
+  CheckDeterministicMetricElementWise(StringView{"tweedie-nloglik@1.5"}, device.ordinal);
+}
+
+inline void VerifyNormalNLogLik(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  std::unique_ptr<Metric> metric{Metric::Create("normal-nloglik", &ctx)};
+  metric->Configure({});
+  ASSERT_STREQ(metric->Name(), "normal-nloglik");
+  auto log_two_pi = std::log(2.0 * std::acos(-1.0));
+  EXPECT_NEAR(GetMetricEval(metric.get(), {0, 0, 1, std::log(4.0f)}, {0, 2}, {1, 3}, {}),
+              (0.5 * log_two_pi + 1.5 * (log_two_pi + std::log(4.0) + 0.25)) / 4.0, 1e-5);
+  EXPECT_NEAR(GetMetricEval(metric.get(), {0, -100}, {0}, {}, {}), 0.5 * (log_two_pi - 100.0),
+              1e-5);
+  EXPECT_EQ(GetMetricEval(metric.get(), {0, 0}, {1}, {0}, {}), 0);
+  EXPECT_EQ(GetMetricEval(metric.get(), HostDeviceVector<float>{}, {}, {}, {}), 0);
+  EXPECT_THROW(GetMetricEval(metric.get(), {0}, {1}, {}, {}), dmlc::Error);
+}
+
+inline void VerifyMultiRMSE(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  size_t n_samples = 32, n_targets = 8;
+  linalg::Tensor<float, 2> y{{n_samples, n_targets}, ctx.Device()};
+  auto &h_y = y.Data()->HostVector();
+  std::iota(h_y.begin(), h_y.end(), 0);
+
+  HostDeviceVector<float> predt(n_samples * n_targets, 0);
+
+  std::unique_ptr<Metric> metric{Metric::Create("rmse", &ctx)};
+  metric->Configure({});
+
+  auto loss = GetMultiMetricEval(metric.get(), predt, y, {}, {});
+  std::vector<float> weights(n_samples, 1);
+  auto loss_w = GetMultiMetricEval(metric.get(), predt, y, weights, {});
+
+  std::transform(h_y.cbegin(), h_y.cend(), h_y.begin(), [](auto &v) { return v * v; });
+  auto ret = std::sqrt(std::accumulate(h_y.cbegin(), h_y.cend(), 1.0, std::plus<>{}) / h_y.size());
+  ASSERT_FLOAT_EQ(ret, loss);
+  ASSERT_FLOAT_EQ(ret, loss_w);
+}
+
+inline void VerifyMultiAlphaLayout(Metric *metric, bool expectile) {
+  metric->Configure({{expectile ? "expectile_alpha" : "quantile_alpha", "[0.25, 0.75]"}});
+  linalg::Tensor<float, 2> labels{{1.0f, 3.0f, 2.0f, 4.0f}, {2, 2}, DeviceOrd::CPU()};
+  HostDeviceVector<float> predts{0, 1, 3, 4, 1, 1, 3, 6};
+  std::vector<float> weights{1, 3};
+  auto expected = expectile ? 0.859375 : 0.421875;
+  EXPECT_NEAR(GetMultiMetricEval(metric, predts, labels, weights, {}), expected, 1e-6);
+  // Keep at least one non-empty worker when testing empty partitions.
+  if (collective::GetWorldSize() > 1) {
+    if (collective::GetRank() == 0) {
+      labels.Reshape(0, 2);
+      predts.Resize(0);
+      weights.clear();
+    }
+    EXPECT_NEAR(GetMultiMetricEval(metric, predts, labels, weights, {}), expected, 1e-6);
+  }
+}
+
+inline void VerifyQuantile(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  std::unique_ptr<Metric> metric{Metric::Create("quantile", &ctx)};
+
+  HostDeviceVector<float> predts{0.1f, 0.9f, 0.1f, 0.9f};
+  HostDeviceVector<float> predts_2{0.2f, 0.6f, 0.4f, 0.6f, 0.5f, 1.2f, 0.0f, 0.4f};
+  HostDeviceVector<float> predts_3{0.2f, 0.4f, 0.6f, 0.4f, 0.5f, 0.6f,
+                                   0.5f, 0.8f, 1.2f, 0.0f, 0.3f, 0.4f};
+  std::vector<float> labels{0.5f, 0.5f, 0.9f, 0.1f};
+  std::vector<float> weights{0.2f, 0.4f, 0.6f, 0.8f};
+
+  metric->Configure(Args{{"quantile_alpha", "[0.0]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, weights, {}), 0.400f, 0.001f);
+  metric->Configure(Args{{"quantile_alpha", "[0.2]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, weights, {}), 0.376f, 0.001f);
+  metric->Configure(Args{{"quantile_alpha", "[0.4]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, weights, {}), 0.352f, 0.001f);
+  metric->Configure(Args{{"quantile_alpha", "[0.8]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, weights, {}), 0.304f, 0.001f);
+  metric->Configure(Args{{"quantile_alpha", "[1.0]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, weights, {}), 0.28f, 0.001f);
+
+  metric->Configure(Args{{"quantile_alpha", "[0.0]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, {}, {}), 0.3f, 0.001f);
+  metric->Configure(Args{{"quantile_alpha", "[0.2]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, {}, {}), 0.3f, 0.001f);
+  metric->Configure(Args{{"quantile_alpha", "[0.4]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, {}, {}), 0.3f, 0.001f);
+  metric->Configure(Args{{"quantile_alpha", "[0.8]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, {}, {}), 0.3f, 0.001f);
+  metric->Configure(Args{{"quantile_alpha", "[1.0]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, {}, {}), 0.3f, 0.001f);
+
+  metric->Configure(Args{{"quantile_alpha", "[0.2, 0.8]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts_2, labels, {}, {}), 0.0425f, 0.0001f);
+  metric->Configure(Args{{"quantile_alpha", "[0.2, 0.5, 0.8]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts_3, labels, {}, {}), 0.0450f, 0.0001f);
+  Json config{Object{}};
+  metric->SaveConfig(&config);
+  std::unique_ptr<Metric> loaded{Metric::Create("quantile", &ctx)};
+  loaded->LoadConfig(config);
+  EXPECT_NEAR(GetMetricEval(loaded.get(), predts_3, labels, {}, {}), 0.0450f, 0.0001f);
+
+  loaded->Configure({{"quantile_alpha", "[0.5]"}});
+  EXPECT_NO_THROW(GetMetricEval(loaded.get(), predts, labels, {}, {}));
+  loaded->LoadConfig(config);
+  EXPECT_NEAR(GetMetricEval(loaded.get(), predts_3, labels, {}, {}), 0.0450f, 0.0001f);
+
+  auto invalid = config;
+  invalid["quantile_loss_param"]["quantile_alpha"] = String{"[1.5]"};
+  EXPECT_THROW(loaded->LoadConfig(invalid), dmlc::Error);
+
+  VerifyMultiAlphaLayout(metric.get(), false);
+}
+
+inline void VerifyExpectile(DeviceOrd device) {
+  auto ctx = MakeCUDACtx(device.ordinal);
+  std::unique_ptr<Metric> metric{Metric::Create("expectile", &ctx)};
+
+  HostDeviceVector<float> predts{0.1f, 0.9f, 0.1f, 0.9f};
+  HostDeviceVector<float> predts_2{0.2f, 0.6f, 0.4f, 0.6f, 0.5f, 1.2f, 0.0f, 0.4f};
+  HostDeviceVector<float> predts_3{0.2f, 0.4f, 0.6f, 0.4f, 0.5f, 0.6f,
+                                   0.5f, 0.8f, 1.2f, 0.0f, 0.3f, 0.4f};
+  std::vector<float> labels{0.5f, 0.5f, 0.9f, 0.1f};
+  std::vector<float> weights{0.2f, 0.4f, 0.6f, 0.8f};
+
+  metric->Configure(Args{{"expectile_alpha", "[0.0]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, weights, {}), 0.288f, 0.001f);
+  metric->Configure(Args{{"expectile_alpha", "[0.2]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, weights, {}), 0.272f, 0.001f);
+  metric->Configure(Args{{"expectile_alpha", "[0.4]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, weights, {}), 0.256f, 0.001f);
+  metric->Configure(Args{{"expectile_alpha", "[0.8]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, weights, {}), 0.224f, 0.001f);
+  metric->Configure(Args{{"expectile_alpha", "[1.0]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, weights, {}), 0.208f, 0.001f);
+
+  metric->Configure(Args{{"expectile_alpha", "[0.0]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, {}, {}), 0.2f, 0.001f);
+  metric->Configure(Args{{"expectile_alpha", "[0.2]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, {}, {}), 0.2f, 0.001f);
+  metric->Configure(Args{{"expectile_alpha", "[0.4]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, {}, {}), 0.2f, 0.001f);
+  metric->Configure(Args{{"expectile_alpha", "[0.8]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, {}, {}), 0.2f, 0.001f);
+  metric->Configure(Args{{"expectile_alpha", "[1.0]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts, labels, {}, {}), 0.2f, 0.001f);
+
+  metric->Configure(Args{{"expectile_alpha", "[0.2, 0.8]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts_2, labels, {}, {}), 0.01175f, 0.0001f);
+  metric->Configure(Args{{"expectile_alpha", "[0.2, 0.5, 0.8]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts_3, labels, {}, {}), 0.0103333f, 0.0001f);
+
+  metric->Configure(Args{{"expectile_alpha", "[0.2, 0.8]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts_2, labels, weights, {}), 0.0129f, 0.0001f);
+  metric->Configure(Args{{"expectile_alpha", "[0.2, 0.5, 0.8]"}});
+  EXPECT_NEAR(GetMetricEval(metric.get(), predts_3, labels, weights, {}), 0.0119333f, 0.0001f);
+  VerifyMultiAlphaLayout(metric.get(), true);
+}
+}  // namespace xgboost::metric
